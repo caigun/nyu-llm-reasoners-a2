@@ -19,6 +19,10 @@ This directory is organized as follows:
   Feel free to take whatever code you need from assignment 1 (in `student`) and copy it 
   over as a starting point. In addition, you will implement distributed training and
   optimization in this module.
+- [`./examples`](./examples): This folder contains benchmarking examples used in lecture,
+  mostly adapted from Percy Liang's lecutre. It also contains a lightly modified version of the weighted
+  sum implementation from the homework assignment. Feel free to use these as starting points
+  for your benchmarking.
 
 Visually, it should look something like:
 
