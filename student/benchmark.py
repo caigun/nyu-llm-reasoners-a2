@@ -5,6 +5,7 @@ import torch.nn as nn
 from typing import Tuple, Dict, Any
 # from a1_basics.model import BasicsTransformerLM
 import a1_basics.model
+import a1_basics.optimizer
 from nsys_profile import annotated_scaled_dot_product_attention
 import torch.cuda.nvtx as nvtx
 
@@ -254,16 +255,20 @@ def profile_forward_backward_pass_simple(
         device: Device to run on
     """
     model.train()
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    # optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    optimizer = a1_basics.optimizer.AdamW(model.parameters(), lr=1e-4)
     loss_fn = nn.CrossEntropyLoss()
     
     for i in range(n_iterations):
         with nvtx.range(f"backward_iteration"):
             optimizer.zero_grad()
-            logits = model(input_ids)
+            with nvtx.range(f"forward_pass_in_backward_iteration"):
+                logits = model(input_ids)
             loss = loss_fn(logits.view(-1, logits.size(-1)), target_labels.view(-1))
-            loss.backward()
-            optimizer.step()
+            with nvtx.range(f"backward_pass_in_backward_iteration"):
+                loss.backward()
+            with nvtx.range(f"optimizer_step"):
+                optimizer.step()
             if device == "cuda" or device.startswith("cuda:"):
                 torch.cuda.synchronize()
 
