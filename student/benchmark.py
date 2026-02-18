@@ -3,7 +3,10 @@ import timeit
 import torch
 import torch.nn as nn
 from typing import Tuple, Dict, Any
-from a1_basics.model import BasicsTransformerLM
+# from a1_basics.model import BasicsTransformerLM
+import a1_basics.model
+from nsys_profile import annotated_scaled_dot_product_attention
+import torch.cuda.nvtx as nvtx
 
 def initialize_model(
     d_model: int,
@@ -32,7 +35,9 @@ def initialize_model(
         Initialized transformer model
     """
 
-    model = BasicsTransformerLM(
+    # Use the annotated version of attention to get NVTX profiling markers
+    a1_basics.model.scaled_dot_product_attention = annotated_scaled_dot_product_attention
+    model = a1_basics.model.BasicsTransformerLM(
         vocab_size=vocab_size,
         context_length=context_length,
         d_model=d_model,
@@ -204,6 +209,66 @@ def print_benchmark_results(results: Dict[str, Any]) -> None:
     print(f"{'=' * 70}\n")
 
 
+def profile_forward_pass_simple(
+    model: nn.Module,
+    input_ids: torch.Tensor,
+    n_iterations: int = 10,
+    device: str = "cuda" if torch.cuda.is_available() else "cpu",
+) -> None:
+    """
+    Simple forward pass for profiling with nsys.
+    Use with: nsys profile --trace cuda,nvtx python benchmark.py --profile forward
+
+    Args:
+        model: The model to profile
+        input_ids: Input token IDs
+        n_iterations: Number of iterations to run
+        device: Device to run on
+    """
+    model.eval()
+    
+    with torch.no_grad():
+        for i in range(n_iterations):
+            with nvtx.range(f"forward_iteration"):
+                _ = model(input_ids)
+                if device == "cuda" or device.startswith("cuda:"):
+                    torch.cuda.synchronize()
+
+
+def profile_forward_backward_pass_simple(
+    model: nn.Module,
+    input_ids: torch.Tensor,
+    target_labels: torch.Tensor,
+    n_iterations: int = 10,
+    device: str = "cuda" if torch.cuda.is_available() else "cpu",
+) -> None:
+    """
+    Simple forward+backward pass for profiling with nsys.
+    Use with: nsys profile --trace cuda,nvtx python benchmark.py --profile backward
+
+    Args:
+        model: The model to profile
+        input_ids: Input token IDs
+        target_labels: Target labels
+        n_iterations: Number of iterations to run
+        device: Device to run on
+    """
+    model.train()
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    loss_fn = nn.CrossEntropyLoss()
+    
+    for i in range(n_iterations):
+        with nvtx.range(f"backward_iteration"):
+            optimizer.zero_grad()
+            logits = model(input_ids)
+            loss = loss_fn(logits.view(-1, logits.size(-1)), target_labels.view(-1))
+            loss.backward()
+            optimizer.step()
+            if device == "cuda" or device.startswith("cuda:"):
+                torch.cuda.synchronize()
+
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Benchmark transformer model forward and backward passes"
@@ -251,6 +316,13 @@ def main():
         default="cuda" if torch.cuda.is_available() else "cpu",
         help="Device to run on (cuda or cpu)",
     )
+    parser.add_argument(
+        "--profile",
+        type=str,
+        choices=["none", "forward", "backward", "both"],
+        default="none",
+        help="Profile with nsys: use 'nsys profile --trace cuda,nvtx python benchmark.py --profile {forward|backward|both}'",
+    )
 
     args = parser.parse_args()
 
@@ -272,6 +344,7 @@ def main():
     print(f"  n_steps:               {args.n_steps}")
     print(f"  n_warmup:              {args.n_warmup}")
     print(f"  pass_type:             {args.pass_type}")
+    print(f"  profiling:             {args.profile}")
     print(f"{'=' * 70}\n")
 
     # Initialize model
@@ -297,7 +370,36 @@ def main():
     )
     print(f"Batch shape: {input_ids.shape}")
 
-    # Run benchmarks
+    # If profiling mode is enabled, run profiling instead of benchmarking
+    if args.profile != "none":
+        print("\n" + "=" * 70)
+        print("PROFILING MODE - Run with: nsys profile --trace cuda,nvtx python benchmark.py --profile {mode}")
+        print("=" * 70 + "\n")
+        
+        if args.profile in ["forward", "both"]:
+            print("Profiling forward pass...")
+            profile_forward_pass_simple(
+                model=model,
+                input_ids=input_ids,
+                n_iterations=args.n_steps,
+                device=args.device,
+            )
+            print("Forward pass profiling complete!")
+
+        if args.profile in ["backward", "both"]:
+            print("Profiling forward+backward pass...")
+            profile_forward_backward_pass_simple(
+                model=model,
+                input_ids=input_ids,
+                target_labels=target_labels,
+                n_iterations=args.n_steps,
+                device=args.device,
+            )
+            print("Forward+backward pass profiling complete!")
+        
+        return
+
+    # Run benchmarks (non-profiling mode)
     if args.pass_type in ["forward", "both"]:
         print("\nRunning forward pass benchmark...")
         forward_results = benchmark_forward_pass(

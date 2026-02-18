@@ -5,7 +5,9 @@ import torch
 from torch.nn.functional import softmax
 import math
 from jaxtyping import Float, Bool, Int
+import torch.cuda.nvtx as nvtx
 
+@nvtx.range("scaled dot product attention")
 def annotated_scaled_dot_product_attention(
     Q: Float[Tensor, " ... queries d_k"],
     K: Float[Tensor, " ... keys    d_k"],
@@ -30,12 +32,17 @@ def annotated_scaled_dot_product_attention(
         implementation with the provided key, query, and value tensors.
     """
 
-    d_k = K.shape[-1]
-    attention_scores = einsum(Q, K, "... query d_k, ... key d_k -> ... query key") / math.sqrt(d_k)
+    with nvtx.range("scaled_dot_product_attention"):
+        d_k = K.shape[-1]
+        attention_scores = einsum(Q, K, "... query d_k, ... key d_k -> ... query key") / math.sqrt(d_k)
 
-    if mask is not None:
-        attention_scores = torch.where(mask, attention_scores, float("-inf"))
+        if mask is not None:
+            attention_scores = torch.where(mask, attention_scores, float("-inf"))
 
-    attention_weights = softmax(attention_scores, dim=-1)  # Softmax over the key dimension
+    with nvtx.range("softmax"):
+        attention_weights = softmax(attention_scores, dim=-1)  # Softmax over the key dimension
 
-    return einsum(attention_weights, V, "... query key, ... key d_v ->  ... query d_v")
+    with nvtx.range("einsum"):
+        output = einsum(attention_weights, V, "... query key, ... key d_v ->  ... query d_v")
+    
+    return output
